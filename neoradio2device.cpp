@@ -10,8 +10,62 @@
 #include <string>
 #include <sstream>
 #include <iterator>
+#include <algorithm>
+#include <memory>
 
-//#define DEBUG_RADIO2_THREAD_DO_NOTHING
+neoRADIO2Device::neoRADIO2Device()
+	: HidDevice()
+{
+	mIsRunning = false;
+	mQuit = false;
+	mThread = nullptr;
+	mLastState = PROCESS_STATE_IDLE;
+	mDeviceCount = 1;
+
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_START);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_IDENTIFY);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_WRITE_DATA);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_READ_DATA);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_WRITE_SETTINGS);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_READ_SETTINGS);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_DONT_USE1);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_DONT_USE2);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_TOGGLE_LED);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_READ_PCBSN);
+
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_READ_CAL);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_WRITE_CAL);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_WRITE_CALPOINTS);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_STORE_CAL);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_READ_CALPOINTS);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_READ_CAL_INFO);
+
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_BL_WRITEBUFFER);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_BL_WRITETOFLASH);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_BL_VERIFY);
+	_InsertEnumIntoMap(mHostFrameCommandNames, NEORADIO2_COMMAND_ENTERBOOT);
+
+	_InsertEnumIntoMap(mDeviceFrameCommandNames, NEORADIO2_STATUS_SENSOR);
+	_InsertEnumIntoMap(mDeviceFrameCommandNames, NEORADIO2_STATUS_FIRMWARE);
+	_InsertEnumIntoMap(mDeviceFrameCommandNames, NEORADIO2_STATUS_IDENTIFY);
+    _InsertEnumIntoMap(mDeviceFrameCommandNames, NEORADIO2_STATUS_READ_SETTINGS);
+    _InsertEnumIntoMap(mDeviceFrameCommandNames, NEORADIO2_STATUS_WRITE_SETTINGS);
+	_InsertEnumIntoMap(mDeviceFrameCommandNames, NEORADIO2_STATUS_READ_PCBSN);
+	_InsertEnumIntoMap(mDeviceFrameCommandNames, NEORADIO2_STATUS_CAL);
+	_InsertEnumIntoMap(mDeviceFrameCommandNames, NEORADIO2_STATUS_CAL_STORE);
+	_InsertEnumIntoMap(mDeviceFrameCommandNames, NEORADIO2_STATUS_CAL_INFO);
+	_InsertEnumIntoMap(mDeviceFrameCommandNames, NEORADIO2_STATUS_CALPOINTS);
+	_InsertEnumIntoMap(mDeviceFrameCommandNames, NEORADIO2_STATUS_NEED_ID);
+
+	_InsertEnumIntoMap(mCommandStateNames, COMMAND_STATE_RESET);
+	_InsertEnumIntoMap(mCommandStateNames, COMMAND_STATE_RECEIVED_HEADER);
+	_InsertEnumIntoMap(mCommandStateNames, COMMAND_STATE_RECEIVING_DATA);
+	_InsertEnumIntoMap(mCommandStateNames, COMMAND_STATE_RECEIVED_DATA);
+	_InsertEnumIntoMap(mCommandStateNames, COMMAND_STATE_CRC_OKAY);
+	_InsertEnumIntoMap(mCommandStateNames, COMMAND_STATE_ERROR);
+	_InsertEnumIntoMap(mCommandStateNames, COMMAND_STATE_CRC_ERROR);
+	_InsertEnumIntoMap(mCommandStateNames, COMMAND_STATE_FINISHED);
+}
 
 bool isDeviceHeaderId(uint8_t id)
 {
@@ -38,11 +92,78 @@ bool neoRADIO2Device::quit(bool wait_for_quit)
 	mMutex.lock();
 	mQuit = true;
 	mMutex.unlock();
-	if (wait_for_quit)
-		mThread->join();
+	if (mThread && wait_for_quit)
+	{
+		try
+		{
+			mThread->join();
+		}
+		catch(const std::exception& e)
+		{
+			DEBUG_PRINT("%s", e.what());
+		}
+	}
+		
 	delete mThread;
 	mThread = nullptr;
 	return true;
+}
+
+Devices neoRADIO2Device::_findAll()
+{
+	Devices devices;
+
+	std::vector<neoRADIO2Device*> devs;
+
+	hid_device_info* hdi = NULL;
+	hid_device_info* first_hdi = hdi;
+	if (hdi = hid_enumerate(0x93C, 0x1300))
+		while (hdi != NULL)
+		{
+			auto device = std::make_shared<neoRADIO2Device>();
+			device->getDeviceInfo()->is_blocking = true;
+
+			auto interface_number = hdi->interface_number;
+#ifdef __APPLE__
+			// https://github.com/signal11/hidapi/issues/326
+			// hidapi after 02/11/17 shouldn't have this problem
+			if (interface_number == -1)
+			{
+				interface_number = hdi->path[strlen(hdi->path) - 1] - 0x30;
+			}
+#endif
+			device->getDeviceInfo()->di.vendor_id = hdi->vendor_id;
+			device->getDeviceInfo()->di.product_id = hdi->product_id;
+
+			if (hdi->product_string)
+			{
+				std::wcstombs(device->getDeviceInfo()->di.name, hdi->product_string, 64);
+			}
+			if (hdi->serial_number)
+			{
+				std::wcstombs(device->getDeviceInfo()->di.serial_str, hdi->serial_number, 64);
+			}
+
+			if (interface_number == 0)
+			{
+				device->addPath(CHANNEL_0, hdi->path);
+				if (hdi->next)
+					device->addPath(CHANNEL_1, hdi->next->path);
+				hdi = hdi->next->next;
+			}
+			else if (interface_number == 1)
+			{
+				if (hdi->next)
+					device->addPath(CHANNEL_0, hdi->next->path);
+				device->addPath(CHANNEL_1, hdi->path);
+				hdi = hdi->next->next;
+			}
+			else
+				hdi = hdi->next;
+			devices.push_back(device);
+		}
+	hid_free_enumeration(first_hdi);
+	return devices;
 }
 
 // this code will loop forever until you return false or user requested a quit()
@@ -59,7 +180,7 @@ bool neoRADIO2Device::runConnecting()
 	auto success =  HidDevice::runConnecting();
 	if (!success)
 	{
-		DEBUG_PRINT("HidDevice::runConnecting() failed!");
+		DEBUG_PRINT_ANNOYING("HidDevice::runConnecting() failed!");
 		return success;
 	}
 
@@ -69,7 +190,7 @@ bool neoRADIO2Device::runConnecting()
 #if !defined(DEBUG_RADIO2_THREAD_DO_NOTHING)
 	// http://www.ftdichip.com/Support/Documents/ProgramGuides/AN_394_User_Guide_for_FT260.pdf
 	// Setup FT260 Clock 4.4.3
-	DEBUG_PRINT("Setup FT260 Clock");
+	DEBUG_PRINT_ANNOYING("Setup FT260 Clock");
 	memset(buffer, 0, sizeof(buffer));
 	buffer[0] = 0xA1; // report id;
 	buffer[1] = 0x1; // Set Clock
@@ -84,7 +205,7 @@ bool neoRADIO2Device::runConnecting()
 
 	// http://www.ftdichip.com/Support/Documents/ProgramGuides/AN_394_User_Guide_for_FT260.pdf
 	// 4.4.8 Select GPIOA Function
-	DEBUG_PRINT("Select GPIOA Function TX_LED");
+	DEBUG_PRINT_ANNOYING("Select GPIOA Function TX_LED");
 	memset(buffer, 0, sizeof(buffer));
 	buffer[0] = 0xA1; // report id;
 	buffer[1] = 0x08; // GPIOA Function
@@ -99,7 +220,7 @@ bool neoRADIO2Device::runConnecting()
 
 	// http://www.ftdichip.com/Support/Documents/ProgramGuides/AN_394_User_Guide_for_FT260.pdf
 	// 4.4.9 Select GPIOG Function
-	DEBUG_PRINT("Select GPIOG Function RX_LED");
+	DEBUG_PRINT_ANNOYING("Select GPIOG Function RX_LED");
 	memset(buffer, 0, sizeof(buffer));
 	buffer[0] = 0xA1; // report id;
 	buffer[1] = 0x09; // GPIOG Function
@@ -114,7 +235,7 @@ bool neoRADIO2Device::runConnecting()
 
 	// http://www.ftdichip.com/Support/Documents/ProgramGuides/AN_394_User_Guide_for_FT260.pdf
 	// 4.7.1 GPIO Write Request
-	DEBUG_PRINT("GPIO Write Request - GPIOH Output");
+	DEBUG_PRINT_ANNOYING("GPIO Write Request - GPIOH Output");
 	memset(buffer, 0, sizeof(buffer));
 	buffer[0] = 0xB0; // report id;
 	buffer[1] = 0x00; // GPIO0
@@ -131,7 +252,7 @@ bool neoRADIO2Device::runConnecting()
 
 	// http://www.ftdichip.com/Support/Documents/ProgramGuides/AN_394_User_Guide_for_FT260.pdf
 	// 4.4.17 Configure UART 
-	DEBUG_PRINT("Configure UART - %d baudrate", baudrate);
+	DEBUG_PRINT_ANNOYING("Configure UART - %d baudrate", baudrate);
 	memset(buffer, 0, sizeof(buffer));
 	buffer[0] = 0xA1; // report id;
 	buffer[1] = 0x41; // UART_CONFIG;
@@ -163,7 +284,7 @@ bool neoRADIO2Device::runConnecting()
 	}
 	*/
 	mThread = new std::thread(&neoRADIO2Device::start, this);
-	DEBUG_PRINT("Changing state to connected!");
+	DEBUG_PRINT_ANNOYING("Changing state to connected!");
 	changeState(DeviceStateConnected);
 	return success;
 #else
@@ -185,210 +306,404 @@ bool neoRADIO2Device::runDisconnecting()
 
 void neoRADIO2Device::start()
 {
-	
-#ifdef ENABLE_DEBUG_PRINT
-	auto id = std::this_thread::get_id();
-	std::stringstream temp;
-	temp << "THREAD ID: " << id;
-	DEBUG_PRINT("Started... %s", temp.str().c_str());
-#endif // ENABLE_DEBUG_PRINT
 	using namespace std::chrono;
 
 	mMutex.lock();
 	mIsRunning = true;
 	mMutex.unlock();
 
-	uint8_t buffer[1024]{0};
-	uint16_t buffer_size = 0;
-
-	uint8_t* header_ptr;
-	uint8_t calculated_checksum = 0;
-	bool identify_at_least_once = false;
-	bool checksum_passed = false;
-	int i=0;
-	bool is_bitfield = false;
 	while (!mQuit)
 	{
-#if defined(DEBUG_RADIO2_THREAD_DO_NOTHING)
-		std::this_thread::sleep_for(1ms);
-		continue;
-#else
 		// Nothing to do if we aren't connected
 		if (state() != DeviceStateConnected)
 		{
-#ifdef DEBUG_ANNOYING
-			DEBUG_PRINT("NOT CONNECTED!");
-#endif // DEBUG_ANNOYING
 			std::this_thread::sleep_for(1ms);
 			continue;
 		}
-#if defined(IDENTIFY_CHAIN_ON_CONNECT)
-		if (!identify_at_least_once)
-		{
-			identify_at_least_once = identifyChain();
-		}
-#endif // IDENTIFY_CHAIN_ON_CONNECT
-		auto start_time = std::chrono::high_resolution_clock::now();
-		bool success = false;
-		// If you hate yourself, uncomment this line:
-		//DEBUG_PRINT("Last State: %d", mLastState);
-		std::vector<uint8_t> data;
+#ifdef SLOW_DOWN_MAIN_LOOP
+		std::this_thread::sleep_for(100ms);
+#endif
+		mMutex.lock();
 		switch (mLastState)
 		{
 		case PROCESS_STATE_IDLE:
-#ifdef DEBUG_ANNOYING
-			DEBUG_PRINT("PROCESS_STATE_IDLE");
-#endif // DEBUG_ANNOYING
-			if (canRead(CHANNEL_1) >= 1)
+		{
+			if (!processStateIdle())
 			{
-				memset(buffer, 0, sizeof(buffer));
-				buffer_size = 1;
-				// Can we read a byte and is it valid?
-				if (!read(buffer, &buffer_size, CHANNEL_1))
-				{
-					DEBUG_PRINT("Failed to read!");
-					break;
-				}
-				auto data = buffer[0];
-				if (!isValidHeaderId(data))
-				{
-					DEBUG_PRINT("WARNING: Dropping %d bytes due to invalid start of frame (data: 0x%x)", buffer_size, buffer[0]);
-					break;
-				}
-				mLastframe.reset();
-				mLastframe.frame()->header.start_of_frame = data;
-				mLastState = PROCESS_STATE_HEADER;
-			}
-			break;
-		case PROCESS_STATE_HEADER:
-			DEBUG_PRINT("PROCESS_STATE_HEADER");
-			// Do we have enough data to serialize the header?
-			buffer_size = sizeof(mLastframe.frame()->header) - sizeof(mLastframe.frame()->header.start_of_frame);
-			if (canRead(CHANNEL_1) < buffer_size)
-				break;
-			memset(buffer, 0, sizeof(buffer));
-			if (!read(buffer, &buffer_size, CHANNEL_1))
-			{
-				break; // TODO: We are essentially dropping bytes here
-			}
-			header_ptr = (uint8_t*)&mLastframe.frame()->header;
-			// Increment the pointer past the start of frame since we already have it
-			header_ptr += sizeof(mLastframe.frame()->header.start_of_frame);
-			memcpy(header_ptr, buffer, buffer_size);
-
-			// NEORADIO2_COMMAND_IDENTIFY is both a bitfield and index, to avoid a headache here lets set the device/bank to zero
-			if (isHostHeaderId(mLastframe.frame()->header.start_of_frame) && mLastframe.frame()->header.command_status == NEORADIO2_COMMAND_IDENTIFY)
-			{
-				mLastframe.frame()->header.device = 0x0;
-				mLastframe.frame()->header.bank = 0x0;
-			}
-			is_bitfield = isHostHeaderId(mLastframe.frame()->header.start_of_frame) ||
-				(isDeviceHeaderId(mLastframe.frame()->header.start_of_frame) && mLastframe.frame()->header.command_status == NEORADIO2_STATUS_IDENTIFY);
-			mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_RECEIVED_HEADER, is_bitfield);
-			DEBUG_PRINT("%s", frameToString(*mLastframe.frame(), is_bitfield).c_str());
-			mLastState = PROCESS_STATE_DATA;
-			break;
-		case PROCESS_STATE_DATA:
-			DEBUG_PRINT("PROCESS_STATE_DATA");
-			if (mLastframe.frame()->header.len == 0)
-			{
-				// skip the data process because we won't have any
-				mLastState = PROCESS_STATE_CRC;
+				mMutex.unlock();
+				// Make sure we don't hog the CPU when Idle
+				std::this_thread::sleep_for(1ms);
+				mMutex.lock();
 				break;
 			}
-
-			// Do we have enough data to serialize the header's data?
-			buffer_size = mLastframe.frame()->header.len; 
-			if (canRead(CHANNEL_1) <= buffer_size)
-				break;
-			if (!read(buffer, &buffer_size, CHANNEL_1))
-			{
-				mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_ERROR, is_bitfield);
-				mLastState = PROCESS_STATE_FINISHED;
-				break; // TODO: We are essentially dropping bytes here
-			}
-			// Copy the data into mLastframe
-			if (buffer_size > sizeof(mLastframe.frame()->data))
-			{
-				mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_ERROR, is_bitfield);
-				mLastState = PROCESS_STATE_FINISHED;
-				break; // TODO: We are essentially dropping bytes here
-			}
-			// Add data and Update the command
-			memcpy(&mLastframe.frame()->data, buffer, buffer_size);
-			for (int i=0; i < buffer_size; ++i)
-				data.push_back(buffer[i]);
-			memcpy(data.data(), buffer, buffer_size);
-			mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_RECEIVED_DATA, is_bitfield);
-			mDCH.updateData(&mLastframe.frame()->header, data, is_bitfield);
-			DEBUG_PRINT("%s", frameToString(*mLastframe.frame(), is_bitfield).c_str());
-			mLastState = PROCESS_STATE_CRC;
-			break;
-		case PROCESS_STATE_CRC:
-			DEBUG_PRINT("PROCESS_STATE_CRC");
-			buffer_size = sizeof(mLastframe.frame()->crc);
-			// Do we have enough data to serialize the header's crc?
-			if (canRead(CHANNEL_1) < buffer_size)
-				break;
-			if (!read(buffer, &buffer_size, CHANNEL_1))
-			{
-				mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_ERROR, is_bitfield);
-				DEBUG_PRINT("%s", frameToString(*mLastframe.frame(), is_bitfield).c_str());
-				mLastState = PROCESS_STATE_FINISHED;
-				break; // TODO: We are essentially dropping bytes here
-			}
-			// add the crc to the frame
-			mLastframe.frame()->crc = buffer[0];
-#if !defined(SKIP_CHECKSUM_VERIFY)
-			// CRC is going to fail since we changed the bank from index, lets put it back for calculation
-			//for (i=0; mLastframe.frame()->header.bank >>= 1; ++i) {}
-			//mLastframe.frame()->header.bank = i;
-			calculated_checksum = 0;
-			checksum_passed = verifyFrameChecksum(mLastframe.frame(), &calculated_checksum);
-			//mLastframe.frame()->header.bank = (1 << mLastframe.frame()->header.bank);
-			mDCH.updateCommand(&mLastframe.frame()->header, (checksum_passed ? COMMAND_STATE_FINISHED : COMMAND_STATE_CRC_ERROR), is_bitfield);
-			mLastState = PROCESS_STATE_FINISHED;
-			if (!checksum_passed)
-			{
-				DEBUG_PRINT("ERROR: CRC Failure: Got %d, Expected %d", mLastframe.frame()->crc, calculated_checksum);
-			}
-			DEBUG_PRINT("%s", frameToString(*mLastframe.frame(), is_bitfield).c_str());
-#endif
-			break;
-		case PROCESS_STATE_FINISHED:
-			DEBUG_PRINT("PROCESS_STATE_FINISHED");
-			mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_FINISHED, is_bitfield);
-			// Figure out how many devices are on the chain here
-			if (isDeviceHeaderId(mLastframe.frame()->header.start_of_frame) && mLastframe.frame()->header.command_status == NEORADIO2_STATUS_IDENTIFY)
-			{
-				auto device_count = mLastframe.frame()->header.device + 1;
-				updateDeviceCount(device_count > mDeviceCount ? device_count : mDeviceCount);
-				DEBUG_PRINT("Device Count = %d", mDeviceCount);
-			}
-			DEBUG_PRINT("%s", frameToString(*mLastframe.frame(), is_bitfield).c_str());
-			DEBUG_PRINT("PROCESS_STATE_FINISHED COMPLETE\n");
-			mLastState = PROCESS_STATE_IDLE;
-			break;
 		}
-
-		// Make sure we don't hog the CPU
-		auto elapsed_time = std::chrono::high_resolution_clock::now() - start_time;
-		if (elapsed_time < 1ms)
-			std::this_thread::sleep_for(1ms - elapsed_time);
-#endif // DEBUG_RADIO2_THREAD_DO_NOTHING
+		case PROCESS_STATE_HEADER:
+			if (!processStateHeader())
+				break;
+		case PROCESS_STATE_DATA:
+			if (!processStateData())
+				break;
+		case PROCESS_STATE_CRC:
+			if (!processStateCRC())
+				break;
+		case PROCESS_COMPLETE_PACKET:
+			if (!processStateCompletePacket())
+				break;
+		case PROCESS_STATE_FINISHED:
+			processStateFinished();
+			break;
+		};
+		mMutex.unlock();
 	}
-
 	mMutex.lock();
 	mIsRunning = false;
 	mMutex.unlock();
-
-#ifdef ENABLE_DEBUG_PRINT
-	auto id2 = std::this_thread::get_id();
-	std::stringstream temp2;
-	temp2 << "THREAD ID: " << id2;
-	DEBUG_PRINT("Stopping... %s", temp2.str().c_str());
-#endif // ENABLE_DEBUG_PRINT
 }
+
+bool neoRADIO2Device::processStateIdle()
+{
+	if (canRead(CHANNEL_1) >= 1)
+	{
+		memset(mCommBuffer, 0, sizeof(mCommBuffer));
+		uint16_t read_size = 1;
+		// Can we read a byte and is it valid?
+		if (!read(mCommBuffer, &read_size, CHANNEL_1))
+		{
+			DEBUG_PRINT("Failed to read!");
+			return false;
+		}
+		if (!isValidHeaderId(mCommBuffer[0]))
+		{
+			DEBUG_PRINT_ANNOYING("WARNING: Dropping %d bytes due to invalid start of frame (data: 0x%x)", read_size, mCommBuffer[0]);
+			return false;
+		}
+		mLastframe.reset();
+		mLastframe.frame()->header.start_of_frame = mCommBuffer[0];
+		mLastState = PROCESS_STATE_HEADER;
+	}
+	return mLastState == PROCESS_STATE_HEADER;
+}
+
+bool neoRADIO2Device::processStateHeader()
+{
+	DEBUG_PRINT_ANNOYING("PROCESS_STATE_HEADER");
+	// Do we have enough data to serialize the header?
+	uint16_t buffer_size = sizeof(mLastframe.frame()->header) - sizeof(mLastframe.frame()->header.start_of_frame);
+	if (canRead(CHANNEL_1) < buffer_size)
+		return false;
+	memset(mCommBuffer, 0, sizeof(mCommBuffer));
+	if (!read(mCommBuffer, &buffer_size, CHANNEL_1))
+	{
+		mLastState = PROCESS_STATE_FINISHED;
+		return false; // TODO: We are essentially dropping bytes here
+	}
+	// Copy the buffer into the header
+	uint8_t* header_ptr = (uint8_t*)&mLastframe.frame()->header;
+	// Increment the pointer past the start of frame since we already have it
+	header_ptr += sizeof(mLastframe.frame()->header.start_of_frame);
+	memcpy(header_ptr, mCommBuffer, buffer_size);
+
+	// Is the current frame a bitfield?
+	bool is_bitfield = isHostHeaderId(mLastframe.frame()->header.start_of_frame);
+	mLastframe.setIsBitField(is_bitfield);
+
+	// Verify header fields are correct
+	if (isDeviceHeaderId(mLastframe.frame()->header.start_of_frame))
+	{
+		// Verify Device Frame Header
+		if (mLastframe.frame()->header.device >= 8)
+		{
+			DEBUG_PRINT("ERROR: Header device field is out of range %d", mLastframe.frame()->header.device);
+			mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_ERROR, is_bitfield);
+			mLastState = PROCESS_STATE_FINISHED;
+			return false;
+		}
+		if (mLastframe.frame()->header.bank >= 8)
+		{
+			DEBUG_PRINT("ERROR: Header bank field is out of range %d", mLastframe.frame()->header.bank);
+			mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_ERROR, is_bitfield);
+			mLastState = PROCESS_STATE_FINISHED;
+			return false;
+		}
+		if (mDeviceFrameCommandNames.find(mLastframe.frame()->header.command_status) == mDeviceFrameCommandNames.end())
+		{
+			DEBUG_PRINT("ERROR: Header command_status field is out of range %d", mLastframe.frame()->header.command_status);
+			mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_ERROR, is_bitfield);
+			mLastState = PROCESS_STATE_FINISHED;
+			return false;
+		}
+	}
+	else if (isHostHeaderId(mLastframe.frame()->header.start_of_frame))
+	{
+		// Verify Host Frame Header - We really should never hit this since we should always be sending this packet.
+		if (mHostFrameCommandNames.find(mLastframe.frame()->header.command_status) == mHostFrameCommandNames.end())
+		{
+			DEBUG_PRINT("ERROR: Header command_status field is out of range %d", mLastframe.frame()->header.command_status);
+			mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_ERROR, is_bitfield);
+			mLastState = PROCESS_STATE_FINISHED;
+			return false;
+		}
+	}
+	else
+	{
+		DEBUG_PRINT("BUG: unrecognized start of frame %d", mLastframe.frame()->header.start_of_frame);
+		mLastState = PROCESS_STATE_FINISHED;
+		return false;
+	}
+
+	DEBUG_PRINT_ANNOYING("%s", frameToString(*mLastframe.frame(), is_bitfield).c_str());
+	mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_RECEIVED_HEADER, is_bitfield);
+
+	mLastState = PROCESS_STATE_DATA;
+	return mLastState == PROCESS_STATE_DATA;
+}
+
+bool neoRADIO2Device::processStateData()
+{
+	DEBUG_PRINT_ANNOYING("PROCESS_STATE_DATA");
+	if (mLastframe.frame()->header.len == 0)
+	{
+		// skip the data process because we won't have any
+		mLastState = PROCESS_STATE_CRC;
+		return true;
+	}
+
+	// Do we have enough data to serialize the header's data?
+	uint16_t buffer_size = mLastframe.frame()->header.len;
+	if (canRead(CHANNEL_1) <= buffer_size)
+		return false;
+
+	bool is_bitfield = mLastframe.isBitField();
+	if (!read(mCommBuffer, &buffer_size, CHANNEL_1))
+	{
+		mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_ERROR, is_bitfield);
+		mLastState = PROCESS_STATE_FINISHED;
+		return false; // TODO: We are essentially dropping bytes here
+	}
+	// Copy the data into mLastframe
+	if (buffer_size > sizeof(mLastframe.frame()->data))
+	{
+		mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_ERROR, is_bitfield);
+		mLastState = PROCESS_STATE_FINISHED;
+		return false; // TODO: We are essentially dropping bytes here
+	}
+	// Add data and Update the command
+	std::vector<uint8_t> data;
+	memcpy(&mLastframe.frame()->data, mCommBuffer, buffer_size);
+	for (int i = 0; i < buffer_size; ++i)
+		data.push_back(mCommBuffer[i]);
+	memcpy(data.data(), mCommBuffer, buffer_size);
+	mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_RECEIVED_DATA, is_bitfield);
+	mDCH.updateData(&mLastframe.frame()->header, data, is_bitfield);
+	DEBUG_PRINT("Processed %d databytes...", buffer_size);
+	if (buffer_size)
+	{
+		DEBUG_PRINT("%s", frameToString(*mLastframe.frame(), is_bitfield).c_str());
+	}
+	mLastState = PROCESS_STATE_CRC;
+	
+	return mLastState == PROCESS_STATE_CRC;
+}
+
+bool neoRADIO2Device::processStateCRC()
+{
+	DEBUG_PRINT_ANNOYING("PROCESS_STATE_CRC");
+	uint16_t buffer_size = sizeof(mLastframe.frame()->crc);
+	// Do we have enough data to serialize the header's crc?
+	if (canRead(CHANNEL_1) < buffer_size)
+		return false;
+	bool is_bitfield = mLastframe.isBitField();
+	if (!read(mCommBuffer, &buffer_size, CHANNEL_1))
+	{
+		mDCH.updateCommand(&mLastframe.frame()->header, COMMAND_STATE_ERROR, is_bitfield);
+		DEBUG_PRINT("%s", frameToString(*mLastframe.frame(), is_bitfield).c_str());
+		mLastState = PROCESS_STATE_FINISHED;
+		return false; // TODO: We are essentially dropping bytes here
+	}
+	// add the crc to the frame
+	mLastframe.frame()->crc = mCommBuffer[0];
+	bool checksum_passed = true;
+	mLastState = PROCESS_COMPLETE_PACKET;
+#if !defined(SKIP_CHECKSUM_VERIFY)
+	// CRC is going to fail since we changed the bank from index, lets put it back for calculation
+	//for (i=0; mLastframe.frame()->header.bank >>= 1; ++i) {}
+	//mLastframe.frame()->header.bank = i;
+	uint8_t calculated_checksum = 0;
+	checksum_passed = verifyFrameChecksum(mLastframe.frame(), &calculated_checksum);
+	//mLastframe.frame()->header.bank = (1 << mLastframe.frame()->header.bank);
+	mDCH.updateCommand(&mLastframe.frame()->header, (checksum_passed ? COMMAND_STATE_CRC_OKAY : COMMAND_STATE_CRC_ERROR), is_bitfield);
+	if (!checksum_passed)
+	{
+		DEBUG_PRINT("ERROR: CRC Failure: Got %d, Expected %d", mLastframe.frame()->crc, calculated_checksum);
+	}
+	DEBUG_PRINT_ANNOYING("%s", frameToString(*mLastframe.frame(), is_bitfield).c_str());
+#endif
+	mLastframe.setIsChecksumValid(checksum_passed);
+    if (!checksum_passed)
+        return false;
+	return checksum_passed;
+}
+
+bool neoRADIO2Device::processStateCompletePacket()
+{
+	mLastState = PROCESS_STATE_FINISHED;
+	auto frame = mLastframe.frame();
+	if (isHostHeaderId(frame->header.start_of_frame))
+	{
+		/*
+		switch (mLastframe.frame()->header.command_status)
+		{
+		default:
+			// Nothing to process, return successful.
+			return true;
+		};
+		*/
+		return true;
+	}
+	else if (isDeviceHeaderId(frame->header.start_of_frame))
+	{
+		switch (mLastframe.frame()->header.command_status)
+		{
+		case NEORADIO2_STATUS_READ_SETTINGS:
+			return processFrameReadSettings();
+			break;
+		default:
+			// Nothing to process, return successful.
+			return true;
+		};
+	}
+	else
+	{
+		DEBUG_PRINT("%d is not a valid start of frame to process.", frame->header.start_of_frame);
+		return false;
+	}
+	return false;
+}
+
+bool neoRADIO2Device::processStateFinished()
+{
+	DEBUG_PRINT_ANNOYING("PROCESS_STATE_FINISHED");
+	bool is_bitfield = mLastframe.isBitField();
+
+	// Update the last command states to "Finished" here if they were "successful"
+	bool success = false;
+	success = mDCH.updateCommandIf(&mLastframe.frame()->header, COMMAND_STATE_CRC_OKAY, COMMAND_STATE_FINISHED, is_bitfield);
+	success = mDCH.updateCommandIf(&mLastframe.frame()->header, COMMAND_STATE_RECEIVED_DATA, COMMAND_STATE_FINISHED, is_bitfield);
+
+	// Figure out how many devices are on the chain here
+	if (isDeviceHeaderId(mLastframe.frame()->header.start_of_frame) && mLastframe.frame()->header.command_status == NEORADIO2_STATUS_IDENTIFY)
+	{
+		auto device_count = mLastframe.frame()->header.device + 1;
+		updateDeviceCount(device_count > mDeviceCount ? device_count : mDeviceCount);
+		DEBUG_PRINT_ANNOYING("Device Count = %d", mDeviceCount);
+	}
+	DEBUG_PRINT("%s", frameToString(*mLastframe.frame(), is_bitfield).c_str());
+	DEBUG_PRINT_ANNOYING("PROCESS_STATE_FINISHED COMPLETE\n");
+	mLastState = PROCESS_STATE_IDLE;
+	return true;
+}
+
+bool neoRADIO2Device::processFrameReadSettings()
+{
+	auto frame = mLastframe.frame();
+
+	// Make sure we actually have the data
+	if (frame->header.len > getSettingsPartSize())
+	{
+		mDCH.updateCommand(&frame->header, COMMAND_STATE_ERROR, mLastframe.isBitField());
+		DEBUG_PRINT("ERROR: frame header len (%d) does not match NEORADIO2_SETTINGS_PARTSIZE (%d)", frame->header.len, getSettingsPartSize());
+		return false;
+	}
+
+	// How many parts of the settings do we have left?
+	auto parts_remaining = mDCH.getExtraState(&frame->header, NEORADIO2_STATUS_READ_SETTINGS);
+	if (parts_remaining < 0)
+	{
+		mDCH.updateCommand(&frame->header, COMMAND_STATE_ERROR, mLastframe.isBitField());
+		DEBUG_PRINT("ERROR: Received an extra Setting frame when we already have all");
+		return false;
+	}
+
+	mDCH.updateCommand(&frame->header, COMMAND_STATE_RECEIVING_DATA, mLastframe.isBitField());
+
+	// grab the partial data
+	std::vector<uint8_t> cmd_data = mDCH.getData(&frame->header);
+	if (cmd_data.size() > sizeof(neoRADIO2_SettingsPart))
+	{
+		DEBUG_PRINT("ERROR: frame data size %d does not match sizeof(neoRADIO2_SettingsPart)", cmd_data.size());
+		return false;
+	}
+	neoRADIO2_SettingsPart part = {};
+	memcpy(&part, cmd_data.data(), sizeof(part));
+
+	// make sure we aren't out of range
+	if (part.part > getSettingsPartsCount())
+	{
+		mDCH.updateCommand(&frame->header, COMMAND_STATE_ERROR, mLastframe.isBitField());
+		DEBUG_PRINT("ERROR: neoRADIO2_SettingsPart.Part (%d) is greater than getSettingsSizePartsCount(): %d", part.part, getSettingsPartsCount());
+		return false;
+	}
+	DEBUG_PRINT("Received Settings Part %d of %d...", part.part, getSettingsPartsCount());
+
+	// Grab the data already stored
+	auto data = mDCH.getExtraData(&frame->header);
+	// Make sure the vector is big enough for us
+	data.resize(getSettingsSize());
+
+	// Push the partial data into the real vector.
+	const auto offset = NEORADIO2_SETTINGS_PARTSIZE * part.part;
+
+	std::copy(&part.data[0], &part.data[frame->header.len-1], data.begin() + offset);
+	// Update the data with the new partial
+	mDCH.updateExtraData(&frame->header, data, mLastframe.isBitField());
+
+	
+	if (parts_remaining == 0)
+	{
+		mDCH.updateCommand(&frame->header, COMMAND_STATE_RECEIVED_DATA, mLastframe.isBitField());
+	}
+	else
+	{
+		// we need to request more data
+		neoRADIO2frame tx_frame =
+		{
+			{ // header
+				0xAA, // start_of_frame
+				NEORADIO2_COMMAND_READ_SETTINGS, // command_status
+				(uint8_t)(frame->header.device & 0xFF),
+				(uint8_t)((1 << frame->header.bank) & 0xFF), // bank
+				1, // len
+			},
+			{ // data
+				(uint8_t)(parts_remaining-1),
+			},
+			0 // crc
+		};
+
+
+		mDCH.updateCommand(&frame->header, COMMAND_STATE_RESET, mLastframe.isBitField());
+
+		// send the packets
+		using namespace std::chrono_literals;
+		
+		//mMutex.unlock();
+		//std::this_thread::sleep_for(50ms);
+		//mMutex.lock();
+		if (!writeUartFrame(&tx_frame, CHANNEL_1))
+		{
+			mDCH.updateCommand(&tx_frame.header, COMMAND_STATE_ERROR, true);
+			return false;
+		}
+	}
+
+	// Update the parts remaining
+	parts_remaining -= 1;
+	mDCH.updateExtra(&frame->header, parts_remaining, mLastframe.isBitField());
+
+
+	return true;
+}
+
 
 bool neoRADIO2Device::isOpen()
 {
@@ -449,13 +764,21 @@ bool neoRADIO2Device::requestIdentifyChain(std::chrono::milliseconds timeout)
 {
 	using namespace std::chrono;
 	const int buffer_size = 64;
+	// TODO: THIS IS A DIRTY HACK, FIX THIS LATER
+	uint8_t device_mask = 0xFF;
+	uint8_t bank_mask = 0xFF;
+	if (isBadge())
+	{
+		//device_mask = 0x00;
+		//bank_mask = 0x01;
+	}
 	neoRADIO2frame frame =
 	{
 		{ // header
 			0xAA, // start_of_frame
 			NEORADIO2_COMMAND_IDENTIFY, // command_status
-			0xFF, 
-			0xFF, // bank
+			device_mask,
+			bank_mask, // bank
 			3, // len
 		},
 		{ // data
@@ -473,8 +796,8 @@ bool neoRADIO2Device::requestIdentifyChain(std::chrono::milliseconds timeout)
 	if (!writeUartFrame(&frame, CHANNEL_1))
 		return false;
 	// Is the command set?
-	bool success = mDCH.isStateSet(0x55, 0, frame.header.bank, NEORADIO2_STATUS_IDENTIFY, COMMAND_STATE_FINISHED, true, timeout);
-	//std::this_thread::sleep_for(1s);
+	bool success = mDCH.isStateSet(0x55, 0, isBadge() ? 0x01 : frame.header.bank, NEORADIO2_STATUS_IDENTIFY, COMMAND_STATE_FINISHED, true, timeout);
+
 	return success;
 }
 
@@ -491,7 +814,7 @@ bool neoRADIO2Device::isChainIdentified(std::chrono::milliseconds timeout)
 	bool success = true;
 	for (auto i=0; i < mDeviceCount; ++i)
 	{
-		if (!mDCH.isStateSet(0x55, device, 0xFF, NEORADIO2_STATUS_IDENTIFY, COMMAND_STATE_FINISHED, true, timeout))
+		if (!mDCH.isStateSet(0x55, device, isBadge() ? 0x01 : 0xFF, NEORADIO2_STATUS_IDENTIFY, COMMAND_STATE_FINISHED, true, timeout))
 		{
 			success = false;
 			break;
@@ -659,7 +982,7 @@ bool neoRADIO2Device::getManufacturerDate(int device, int bank, int& year, int& 
 	return true;
 }
 
-bool neoRADIO2Device::getDeviceType(int device, int bank, int device_type, std::chrono::milliseconds timeout)
+bool neoRADIO2Device::getDeviceType(int device, int bank, int& device_type, std::chrono::milliseconds timeout)
 {
 	// Chain needs to be identified in order to see if we are in bootloader
 	if (!isChainIdentified(timeout))
@@ -729,6 +1052,7 @@ bool neoRADIO2Device::requestPCBSN(int device, int bank, std::chrono::millisecon
 	if (!writeUartFrame(&frame, CHANNEL_1))
 		return false;
 	// Is the command set?
+	auto state = mDCH.getState(0x55, frame.header.device, frame.header.bank, NEORADIO2_STATUS_READ_PCBSN);
 	bool success = mDCH.isStateSet(0x55, frame.header.device, frame.header.bank, NEORADIO2_STATUS_READ_PCBSN, COMMAND_STATE_FINISHED, true, timeout);
 	//std::this_thread::sleep_for(1s);
 	return success;
@@ -804,6 +1128,80 @@ bool neoRADIO2Device::readSensorData(int device, int bank, std::vector<uint8_t>&
 	return true;
 }
 
+bool neoRADIO2Device::writeSensorData(int device, int bank, int mask, int value, std::chrono::milliseconds timeout)
+{
+	using namespace std::chrono;
+	// This command is only available in application code
+	// isApplicationStarted isn't a bitmask
+	for (int d = 0; d < 8; ++d)
+		if ((d << 1) & device)
+			for (int b = 0; b < 8; ++b)
+				if ((b << 1) & bank)
+					if (!isApplicationStarted(d, b, 0s))
+						return false;
+
+	neoRADIO2frame frame =
+	{
+		{ // header
+			0xAA, // start_of_frame
+			NEORADIO2_COMMAND_WRITE_DATA, // command_status
+			(uint8_t)device,
+			(uint8_t)bank, // bank
+			2, // len
+		},
+		{ // data
+			uint8_t(mask & 0xFF),
+			uint8_t(value & 0xFF),
+		},
+		0 // crc
+	};
+
+	// Reset commands
+	mDCH.updateCommand(&frame.header, COMMAND_STATE_RESET, true);
+	// send the packets
+	if (!writeUartFrame(&frame, CHANNEL_1))
+		return false;
+	// Is the command set?
+	bool success = mDCH.isStateSet(&frame.header, COMMAND_STATE_FINISHED, true, timeout);
+	//std::this_thread::sleep_for(1s);
+	return success;
+}
+
+bool neoRADIO2Device::writeSensorDataSuccessful(int device, int bank)
+{
+	using namespace std::chrono;
+	// This command is only available in application code
+	// isApplicationStarted isn't a bitmask
+	for (int d = 0; d < 8; ++d)
+		if ((d << 1) & device)
+			for (int b = 0; b < 8; ++b)
+				if ((b << 1) & bank)
+					if (!isApplicationStarted(d, b, 0s))
+						return false;
+
+	neoRADIO2frame frame =
+	{
+		{ // header
+			0xAA, // start_of_frame
+			NEORADIO2_COMMAND_WRITE_DATA, // command_status
+			(uint8_t)device,
+			(uint8_t)bank, // bank
+			2, // len
+		},
+		{ // data
+			0, // mask & 0xFF,
+			0, // value & 0xFF,
+		},
+		0 // crc
+	};
+
+	// Is the command set?
+	bool success = mDCH.isStateSet(&frame.header, COMMAND_STATE_FINISHED, true, 0s);
+	//std::this_thread::sleep_for(1s);
+	return success;
+}
+
+
 bool neoRADIO2Device::requestSettings(int device, int bank, std::chrono::milliseconds timeout)
 {
 	using namespace std::chrono;
@@ -823,37 +1221,43 @@ bool neoRADIO2Device::requestSettings(int device, int bank, std::chrono::millise
 			NEORADIO2_COMMAND_READ_SETTINGS, // command_status
 			(uint8_t)device,
 			(uint8_t)bank, // bank
-			0, // len
+			1, // len
 		},
 		{ // data
+			(uint8_t)getSettingsPartsCount(),
 		},
 		0 // crc
 	};
-	// Reset commands
+
 	mDCH.updateCommand(&frame.header, COMMAND_STATE_RESET, true);
 	mDCH.updateCommand(0x55, frame.header.device, frame.header.bank, NEORADIO2_STATUS_READ_SETTINGS, COMMAND_STATE_RESET, true);
+	mDCH.updateExtra(0x55, frame.header.device, frame.header.bank, NEORADIO2_STATUS_READ_SETTINGS, getSettingsPartsCount(), true);
+
 	// send the packets
 	if (!writeUartFrame(&frame, CHANNEL_1))
 		return false;
-	// Is the command set?
-	bool success = mDCH.isStateSet(0x55, frame.header.device, frame.header.bank, NEORADIO2_STATUS_READ_SETTINGS, COMMAND_STATE_FINISHED, true, timeout);
+
+	// Wait until we get the command back
+	if (!mDCH.isStateSet(&frame.header, COMMAND_STATE_FINISHED, true, timeout))
+		return false;
+
 	//std::this_thread::sleep_for(1s);
-	return success;
+	return mDCH.isStateSet(0x55, frame.header.device, frame.header.bank, NEORADIO2_STATUS_READ_SETTINGS, COMMAND_STATE_FINISHED, true, timeout);
 }
 
-bool neoRADIO2Device::readSettings(int device, int bank, neoRADIO2_deviceSettings& settings)
+bool neoRADIO2Device::readSettings(int device, int bank, neoRADIO2_settings& settings)
 {
 	memset(&settings, 0, sizeof(settings));
 	if (!mDCH.isStateSet(0x55, device, bank, NEORADIO2_STATUS_READ_SETTINGS, COMMAND_STATE_FINISHED, false))
 		return false;
-	std::vector<uint8_t> _data = mDCH.getData(0x55, device, bank, NEORADIO2_STATUS_READ_SETTINGS);
+	std::vector<uint8_t> _data = mDCH.getExtraData(0x55, device, bank, NEORADIO2_STATUS_READ_SETTINGS);
 	if (_data.size() != sizeof(settings))
 		return false;
 	memcpy(&settings, _data.data(), _data.size());
 	return true;
 }
 
-bool neoRADIO2Device::writeSettings(int device, int bank, neoRADIO2_deviceSettings& settings, std::chrono::milliseconds timeout)
+bool neoRADIO2Device::writeSettings(int device, int bank, neoRADIO2_settings& settings, std::chrono::milliseconds timeout)
 {
 	using namespace std::chrono;
 	// This command is only available in application code
@@ -865,6 +1269,7 @@ bool neoRADIO2Device::writeSettings(int device, int bank, neoRADIO2_deviceSettin
 					if (!isApplicationStarted(d, b, 0s))
 						return false;
 
+	const int frame_count = getSettingsPartsCount();
 	neoRADIO2frame frame =
 	{
 		{ // header
@@ -872,22 +1277,75 @@ bool neoRADIO2Device::writeSettings(int device, int bank, neoRADIO2_deviceSettin
 			NEORADIO2_COMMAND_WRITE_SETTINGS, // command_status
 			(uint8_t)device,
 			(uint8_t)bank, // bank
-			sizeof(settings), // len
+			sizeof(neoRADIO2_SettingsPart), // len
 		},
 		{ // data
 		},
 		0 // crc
 	};
 	// copy the settings into the frame
-	memcpy(frame.data, &settings, sizeof(settings));
+	//memcpy(frame.data, &settings, sizeof(settings));
 
-	// Reset commands
-	mDCH.updateCommand(&frame.header, COMMAND_STATE_RESET, true);
-	// send the packets
-	if (!writeUartFrame(&frame, CHANNEL_1))
-		return false;
-	// Is the command set?
+
+	for (unsigned int i = 0; i <= getSettingsPartsCount(); ++i)
+	{
+		mDCH.updateCommand(&frame.header, COMMAND_STATE_RESET, true);
+
+		neoRADIO2_SettingsPart part = {};
+		part.part = i;
+
+		// Calculate the size and offset
+		int size = sizeof(part.data);
+		if (i == (getSettingsPartsCount()))
+			size = getSettingsSize() % sizeof(part.data);
+		int offset = i * sizeof(part.data);
+
+		// Copy the part of the settings into neoRADIO2_SettingsPart
+		memcpy(part.data, (uint8_t*)(&settings)+offset, size);
+
+		// Adjust the frame length
+		frame.header.len = size + sizeof(part.part);
+
+		// Copy the neoRADIO2_SettingsPart into the frame data
+		memcpy(frame.data, &part, sizeof(part));
+
+		DEBUG_PRINT("Sending %d of %d partial frames with a size of %d", i, getSettingsPartsCount(), size);
+
+		if (!writeUartFrame(&frame, CHANNEL_1))
+			return false;
+
+		if (!mDCH.isStateSet(&frame.header, COMMAND_STATE_FINISHED, true, timeout))
+			return false;
+	}
 	return mDCH.isStateSet(&frame.header, COMMAND_STATE_FINISHED, true, timeout);
+}
+
+bool neoRADIO2Device::writeSettingsSuccessful(int device, int bank)
+{
+	using namespace std::chrono;
+	// This command is only available in application code
+	// isApplicationStarted isn't a bitmask
+	for (int d = 0; d < 8; ++d)
+		if ((d << 1) & device)
+			for (int b = 0; b < 8; ++b)
+				if ((b << 1) & bank)
+					if (!isApplicationStarted(d, b, 0s))
+						return false;
+
+	neoRADIO2frame frame =
+	{
+		{ // header
+			0xAA, // start_of_frame
+			NEORADIO2_COMMAND_WRITE_SETTINGS, // command_status
+			(uint8_t)device,
+			(uint8_t)bank, // bank
+			sizeof(neoRADIO2_SettingsPart), // len
+		},
+		{ // data
+		},
+		0 // crc
+	};
+	return mDCH.isStateSet(&frame.header, COMMAND_STATE_FINISHED, true, 0s);
 }
 
 bool neoRADIO2Device::requestCalibration(int device, int bank, const neoRADIO2frame_calHeader& header, std::chrono::milliseconds timeout)
@@ -1048,6 +1506,35 @@ bool neoRADIO2Device::writeCalibration(int device, int bank, const neoRADIO2fram
 	return mDCH.isStateSet(0xAA, frame.header.device, frame.header.bank, NEORADIO2_COMMAND_WRITE_CAL, COMMAND_STATE_FINISHED, true, timeout);
 }
 
+bool neoRADIO2Device::writeCalibrationSuccessful(int device, int bank)
+{
+	using namespace std::chrono;
+	// This command is only available in application code
+	// isApplicationStarted isn't a bitmask
+	for (int d = 0; d < 8; ++d)
+		if ((d << 1) & device)
+			for (int b = 0; b < 8; ++b)
+				if ((b << 1) & bank)
+					if (!isApplicationStarted(d, b, 0s))
+						return false;
+
+	neoRADIO2frame frame =
+	{
+		{ // header
+			0xAA, // start_of_frame
+			NEORADIO2_COMMAND_WRITE_CAL, // command_status
+			(uint8_t)device,
+			(uint8_t)bank, // bank
+			0, // len
+		},
+		{ // data
+		},
+		0 // crc
+	};
+
+	return mDCH.isStateSet(0xAA, frame.header.device, frame.header.bank, NEORADIO2_COMMAND_WRITE_CAL, COMMAND_STATE_FINISHED, true, 0s);
+}
+
 bool neoRADIO2Device::writeCalibrationPoints(int device, int bank, const neoRADIO2frame_calHeader& header, std::vector<float>& data, std::chrono::milliseconds timeout)
 {
 	using namespace std::chrono;
@@ -1089,6 +1576,35 @@ bool neoRADIO2Device::writeCalibrationPoints(int device, int bank, const neoRADI
 		return false;
 	// Is the command set?
 	return mDCH.isStateSet(0xAA, frame.header.device, frame.header.bank, NEORADIO2_COMMAND_WRITE_CALPOINTS, COMMAND_STATE_FINISHED, true, timeout);
+}
+
+
+bool neoRADIO2Device::writeCalibrationPointsSuccessful(int device, int bank)
+{
+	using namespace std::chrono;
+	// This command is only available in application code
+	// isApplicationStarted isn't a bitmask
+	for (int d = 0; d < 8; ++d)
+		if ((d << 1) & device)
+			for (int b = 0; b < 8; ++b)
+				if ((b << 1) & bank)
+					if (!isApplicationStarted(d, b, 0s))
+						return false;
+
+	neoRADIO2frame frame =
+	{
+		{ // header
+			0xAA, // start_of_frame
+			NEORADIO2_COMMAND_WRITE_CALPOINTS, // command_status
+			(uint8_t)device,
+			(uint8_t)bank, // bank
+			0, // len
+		},
+		{ // data
+		},
+		0 // crc
+	};
+	return mDCH.isStateSet(0xAA, frame.header.device, frame.header.bank, NEORADIO2_COMMAND_WRITE_CALPOINTS, COMMAND_STATE_FINISHED, true, 0s);
 }
 
 bool neoRADIO2Device::requestStoreCalibration(int device, int bank, std::chrono::milliseconds timeout)
@@ -1222,6 +1738,95 @@ bool neoRADIO2Device::toggleLED(int device, int bank, int ms, std::chrono::milli
 	return mDCH.isStateSet(0xAA, frame.header.device, frame.header.bank, NEORADIO2_COMMAND_TOGGLE_LED, COMMAND_STATE_FINISHED, true, timeout);
 }
 
+bool neoRADIO2Device::toggleLEDSuccessful(int device, int bank)
+{
+	using namespace std::chrono;
+
+	neoRADIO2frame frame =
+	{
+		{ // header
+			0xAA, // start_of_frame
+			NEORADIO2_COMMAND_TOGGLE_LED, // command_status
+			(uint8_t)device,
+			(uint8_t)bank, // bank
+			1, // len
+		},
+		{ // data
+			0xFF
+		},
+		0 // crc
+	};
+
+	return mDCH.isStateSet(0xAA, frame.header.device, frame.header.bank, NEORADIO2_COMMAND_TOGGLE_LED, COMMAND_STATE_FINISHED, true, 0s);
+}
+
+int neoRADIO2Device::getCommandStateTypeSof(CommandStateType type)
+{
+	switch (type)
+	{
+	case CommandStateType::CommandStateHost:
+		return 0xAA;
+		break;
+	case CommandStateType::CommandStateDevice:
+		return 0x55;
+		break;
+	default:
+		return -1;
+	};
+	return -1;
+}
+
+CommandStatus neoRADIO2Device::getCommandState(int device, int bank, bool bitfield, CommandStateType type, int command)
+{
+	// Converts CommandStates to a CommandStatus
+	auto convertStateToStatus = [](auto& state) {
+		switch (state)
+		{
+		case CommandStates::COMMAND_STATE_RESET:
+		case CommandStates::COMMAND_STATE_CRC_OKAY:
+		case CommandStates::COMMAND_STATE_RECEIVED_DATA:
+		case CommandStates::COMMAND_STATE_RECEIVED_HEADER:
+		case CommandStates::COMMAND_STATE_RECEIVING_DATA:
+			return CommandStatus::StatusInProgress;
+			break;
+		case CommandStates::COMMAND_STATE_FINISHED:
+			return CommandStatus::StatusFinished;
+			break;
+		case CommandStates::COMMAND_STATE_ERROR:
+		case CommandStates::COMMAND_STATE_CRC_ERROR:
+		default:
+			return CommandStatus::StatusError;
+			break;
+		};
+	};
+
+	// convert the bank to a bitfield
+	if (!bitfield)
+	{
+		bank = (1 << bank) & 0xFF;
+	}
+	
+	// Grab all the statuses from the banks
+	std::vector<CommandStatus> status;
+	for (int i = 0; i < 8; ++i)
+	{
+		// If the bank isn't enabled, lets skip it.
+		if (!((1 << i) & bank))
+		{
+			continue;
+		}
+		auto state = mDCH.getState(getCommandStateTypeSof(type), device, i, command);
+		status.push_back(convertStateToStatus(state));
+	}
+
+	if (std::find(status.begin(), status.end(), CommandStatus::StatusError) != status.end())
+		return CommandStatus::StatusError;
+	if (std::find(status.begin(), status.end(), CommandStatus::StatusInProgress) != status.end())
+		return CommandStatus::StatusInProgress;
+	// We can't be any other state
+	return CommandStatus::StatusFinished;
+}
+
 std::string neoRADIO2Device::frameToString(neoRADIO2frame& frame, bool is_bitfield)
 {
 	/*
@@ -1260,6 +1865,7 @@ std::string neoRADIO2Device::frameToString(neoRADIO2frame& frame, bool is_bitfie
 	ss << " Device: 0x" << std::hex << (int)frame.header.device;
 	ss << " Bank: 0x" << std::hex << (int)frame.header.bank;
 	ss << " Len: 0x" << std::hex << (int)frame.header.len;
+    ss << " CRC: 0x" << std::hex << (int)frame.crc;
 	// Append State
 	bool finished = false;
 	if (is_bitfield)
@@ -1299,9 +1905,9 @@ std::string neoRADIO2Device::frameToString(neoRADIO2frame& frame, bool is_bitfie
 
 void neoRADIO2Device::updateDeviceCount(int device_count)
 {
-	mMutex.lock();
+	//mMutex.lock();
 	mDeviceCount = device_count;
-	mMutex.unlock();
+	//mMutex.unlock();
 }
 
 uint8_t neoRADIO2Device::crc8_Calc(uint8_t* data, int len)
@@ -1353,5 +1959,8 @@ bool neoRADIO2Device::verifyFrameChecksum(neoRADIO2frame* frame, uint8_t* calcul
 	auto checksum = crc8_Calc(buffer, sizeof(frame->header)+frame->header.len);
 	if (calculated_checksum)
 		*calculated_checksum = checksum;
+    if (checksum != frame->crc)
+        return false;
+
 	return checksum == frame->crc;
 }

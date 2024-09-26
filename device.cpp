@@ -2,13 +2,18 @@
 
 #include <string>
 #include <sstream>
+#include <cstring> // memcpy
 
-Device::Device(DeviceInfoEx& di)
+Device::Device()
 {
-	memcpy(&mDevInfo, &di, sizeof(mDevInfo));
 	mState = DeviceStateIdle;
 	mQuit = false;
+	mThread = nullptr;
 	
+	
+	memset(&mDevInfo.di, 0, sizeof(mDevInfo.di));
+	mDevInfo.is_blocking = 0;
+	mDevInfo.is_open = 0;
 }
 
 Device::~Device()
@@ -102,9 +107,19 @@ bool Device::quit(bool wait_for_quit)
 	if (mThread)
 	{
 		if (wait_for_quit)
-			mThread->join();
+		{
+			try
+			{
+				mThread->join();
+			}
+			catch(const std::exception& e)
+			{
+				DEBUG_PRINT("%s\n", e.what());
+			}
+		}
+			
 		delete mThread;
-		mThread = NULL;
+		mThread = nullptr;
 	}
 	return true;
 }

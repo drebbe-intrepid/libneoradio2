@@ -3,19 +3,10 @@
 #include <iostream>
 #include <sstream>
 
-HidDevice::HidDevice(DeviceInfoEx& di)
-	: Device(di)
+HidDevice::HidDevice()
+	: Device()
 {
 	hid_init();
-	// Insert the hid_paths to the map
-	if (di.channel_paths.size())
-	for (auto i : di.channel_paths)
-	{
-		HidBuffer* buffer = new HidBuffer();
-		buffer->path = i.second;
-		buffer->reset();
-		mBuffers[i.first] = buffer;
-	}
 }
 
 HidDevice::~HidDevice()
@@ -39,10 +30,11 @@ bool HidDevice::addPath(DeviceChannel channel, std::string path)
 	return Device::addPath(channel, path);
 }
 
-std::vector<HidDevice*> HidDevice::_findAll()
+Devices HidDevice::_findAll()
 {
 	
-	std::vector<HidDevice*> devs;
+	//std::vector<HidDevice*> devs;
+	Devices devs;
 
 	hid_device_info* hdi = NULL;
 	hid_device_info* first_hdi = hdi;
@@ -59,22 +51,22 @@ std::vector<HidDevice*> HidDevice::_findAll()
 		}
 #endif
 		//hdi->serial_number
-		DeviceInfoEx di;
-		memset(&di.di, 0, sizeof(di.di));
+		//auto hid_dev = new HidDevice;
+		auto hid_dev = std::make_shared<HidDevice>();
+		devs.push_back(hid_dev);
+		auto di = hid_dev->getDeviceInfo();
 		if (hdi->product_string)
 		{
-			di.di.name = new char[64]{0};
-			std::wcstombs(di.di.name, hdi->product_string, 64);
+			std::wcstombs(di->di.name, hdi->product_string, 64);
 		}
 		if (hdi->serial_number)
 		{
-			di.di.serial_str = new char[64]{0};
-			std::wcstombs(di.di.serial_str, hdi->serial_number, 64);
+			std::wcstombs(di->di.serial_str, hdi->serial_number, 64);
 		}
-		di.di.product_id = hdi->product_id;
-		di.di.vendor_id = hdi->vendor_id;
+		di->di.product_id = hdi->product_id;
+		di->di.vendor_id = hdi->vendor_id;
 
-		auto hid_dev = new HidDevice(di);
+		
 		if (interface_number == 0)
 		{
 			hid_dev->addPath(CHANNEL_0, hdi->path);
@@ -126,6 +118,8 @@ bool HidDevice::runConnected()
 	for (auto& buffer : mBuffers)
 	{
 		auto buf = buffer.second;
+		if (!buf)
+			continue;
 		buf->rx_lock.lock();
 		uint8_t temp[64]{};
 		int length = 0;
@@ -212,6 +206,10 @@ bool HidDevice::read(uint8_t* buffer, uint16_t* buffer_size, DeviceChannel chann
 		return false;
 	}
 	FIFO_Pop(&buf->rx_fifo, buffer, *buffer_size);
+#ifdef _DEBUG
+    memcpy(mDebugRxBufferCopy+mDebugRxBufferCopyIndex, buffer, *buffer_size);
+    mDebugRxBufferCopyIndex += *buffer_size;
+#endif
 #ifdef DEBUG_ANNOYING
 	std::stringstream ss;
 	for (int i=0; i < *buffer_size && i < 30; ++i)
@@ -242,6 +240,10 @@ bool HidDevice::write(uint8_t* buffer, uint16_t* buffer_size, DeviceChannel chan
 	DEBUG_PRINT("write(): len: %d channel: %d\n\t\tdata: %s", *buffer_size, channel, ss.str().c_str());
 #endif // DEBUG_ANNOYING
 	FIFO_Push(&buf->tx_fifo, buffer, *buffer_size);
+#ifdef _DEBUG
+    memcpy(mDebugTxBufferCopy+mDebugTxBufferCopyIndex, buffer, *buffer_size);
+    mDebugTxBufferCopyIndex += *buffer_size;
+#endif
 	return true;
 }
 
@@ -282,7 +284,7 @@ bool HidDevice::sendFeatureReport(uint8_t* buffer, uint16_t* buffer_size, Device
 	// windows seems to truncate to 64 bytes...
 	memcpy(temp_buf, buffer, *buffer_size);
 
-	DEBUG_PRINT("hid_send_feature_report():\n\tlen: %d, channel: %d, path: %s", *buffer_size, channel, buf->path.c_str());
+	DEBUG_PRINT_ANNOYING("hid_send_feature_report():\n\tlen: %d, channel: %d, path: %s", *buffer_size, channel, buf->path.c_str());
 	auto length = hid_send_feature_report(buf->handle, (unsigned char*)temp_buf, sizeof(temp_buf));
 	return length == 64;
 }

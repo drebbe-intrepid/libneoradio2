@@ -61,10 +61,16 @@ public:
 
 	void reset()
 	{
-		memset(tx_buffer, 0, HidBufferSize);
-		memset(rx_buffer, 0, HidBufferSize);
-		FIFO_Clear(&tx_fifo);
-		FIFO_Clear(&rx_fifo);
+		if (tx_buffer)
+		{
+			memset(tx_buffer, 0, HidBufferSize);
+			FIFO_Clear(&tx_fifo);
+		}
+		if (rx_buffer)
+		{
+			memset(rx_buffer, 0, HidBufferSize);
+			FIFO_Clear(&rx_fifo);
+		}
 	}
 };
 typedef std::map<DeviceChannel, HidBuffer*> HidBuffers;
@@ -73,10 +79,10 @@ typedef std::map<DeviceChannel, HidBuffer*> HidBuffers;
 class HidDevice : public Device
 {
 public:
-	HidDevice(DeviceInfoEx& di);
+	HidDevice();
 	virtual ~HidDevice();
 
-	static std::vector<HidDevice*> _findAll();
+	Devices _findAll();
 
 	// this code will loop forever until you return false or user requested a quit()
 	virtual bool runIdle();
@@ -103,6 +109,15 @@ protected:
 	virtual bool sendFeatureReport(uint8_t* buffer, uint16_t* buffer_size, DeviceChannel channel);
 
 	bool isReportIdValid(uint8_t& data);
+
+#ifdef _DEBUG
+    uint8_t mDebugTxBufferCopy[1024*1000];
+    uint64_t mDebugTxBufferCopyIndex = 0;
+
+    uint8_t mDebugRxBufferCopy[1024*1000];
+    uint64_t mDebugRxBufferCopyIndex = 0;
+#endif
+
 };
 
 #endif // __HIDDEVICE_H__

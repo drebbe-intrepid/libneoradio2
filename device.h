@@ -8,34 +8,45 @@
 #include <map>
 
 #include "config.h"
-#include "libneoradio2.h"
+#include "libneoradio2common.h"
 
 
 #ifdef _MSC_VER
 
 #define __FILENAME__ (strrchr(__FILE__, '\\') ? strrchr(__FILE__, '\\') + 1 : __FILE__)
 
-#if defined(ENABLE_DEBUG_PRINT) && (defined(DEBUG) || defined(_DEBUG))
+#if defined(ENABLE_DEBUG_PRINT)
 #define DEBUG_PRINT(fmt, ...) fprintf(stderr, "\tDEBUG: %s:%d:%s(): " fmt "\n", \
     __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
 #else
 #define DEBUG_PRINT(fmt, ...) /* Don't do anything in release builds */
 #endif
 
+
+#if defined(ENABLE_DEBUG_PRINT_ANNOYING)
+#define DEBUG_PRINT_ANNOYING(fmt, ...) fprintf(stderr, "\tDEBUG: %s:%d:%s(): " fmt "\n", \
+    __FILENAME__, __LINE__, __func__, ##__VA_ARGS__)
+#else
+#define DEBUG_PRINT_ANNOYING(fmt, ...) /* Don't do anything in release builds */
+#endif
+
 #else
 
-#if defined(ENABLE_DEBUG_PRINT) && (defined(DEBUG) || defined(_DEBUG))
+#if defined(ENABLE_DEBUG_PRINT)
 #define DEBUG_PRINT(fmt, args...) fprintf(stderr, "DEBUG: %s:%d:%s(): " fmt "\n", \
     __FILE__, __LINE__, __func__, ##args)
 #else
 #define DEBUG_PRINT(fmt, args...) /* Don't do anything in release builds */
 #endif
 
-#endif 
+#if defined(ENABLE_DEBUG_PRINT_ANNOYING)
+#define DEBUG_PRINT_ANNOYING(fmt, args...) fprintf(stderr, "DEBUG: %s:%d:%s(): " fmt "\n", \
+    __FILE__, __LINE__, __func__, ##args)
+#else
+#define DEBUG_PRINT_ANNOYING(fmt, args...) /* Don't do anything in release builds */
+#endif
 
-class Device;
-typedef std::vector<Device*> Devices;
-
+#endif
 
 typedef enum
 {
@@ -57,22 +68,13 @@ typedef struct _DeviceInfoEx
 	DeviceChannelMap channel_paths;
 } DeviceInfoEx;
 
+class Device;
+typedef std::vector<std::shared_ptr<Device>> Devices;
 
-template<class T>
-class DeviceFinder
+class Device
 {
 public:
-	static std::vector<T*> findAll()
-	{
-		return T::_findAll();
-	}
-};
-
-
-class Device : public DeviceFinder<Device>
-{
-public:
-	Device(DeviceInfoEx& di);
+	Device();
 	virtual ~Device();
 
 	virtual bool open();
@@ -80,37 +82,41 @@ public:
 
 	bool isOpen();
 
-	virtual Neoradio2DeviceInfo deviceInfo() const { return mDevInfo.di; }
+	DeviceInfoEx* getDeviceInfo() { return &mDevInfo; }
+
+	// Implement this in inherited classes
+	Devices _findAll() { return Devices(); }
+
+	template <class T>
+	static Devices findAll()
+	{
+		T* t = new T();
+		auto res = t->_findAll();
+		delete t;
+		return res;
+	}
 
 protected:
 	DeviceInfoEx mDevInfo;
 
 	// this code will loop forever until you return false or user requested a quit()
-	virtual bool runIdle()=0;
-	virtual bool runConnecting()=0;
-	virtual bool runConnected()=0;
-	virtual bool runDisconnecting()=0;
+	virtual bool runIdle() { return false; };
+	virtual bool runConnecting() { return false; };
+	virtual bool runConnected() { return false; };
+	virtual bool runDisconnecting() { return false; };
 
-	virtual bool read(uint8_t* buffer, uint16_t* buffer_size, DeviceChannel channel)=0;
-	virtual bool write(uint8_t* buffer, uint16_t* buffer_size, DeviceChannel channel)=0;
+	virtual bool read(uint8_t* buffer, uint16_t* buffer_size, DeviceChannel channel) { return false; };
+	virtual bool write(uint8_t* buffer, uint16_t* buffer_size, DeviceChannel channel) { return false; };
 
 	// returns how many bytes are available in the channel's buffer
-	virtual uint16_t canRead(DeviceChannel channel)=0;
+	virtual uint16_t canRead(DeviceChannel channel) { return false; };
 	// returns how many bytes can be written into the channel's buffer
-	virtual uint16_t canWrite(DeviceChannel channel)=0;
+	virtual uint16_t canWrite(DeviceChannel channel) { return false; };
 
 	virtual int channelCount() const { return mDevInfo.channel_paths.size(); }
 
 	virtual bool addPath(DeviceChannel channel, std::string path);
 	virtual std::string path(DeviceChannel channel);
-
-	
-
-	// Override this in inherited classes
-	static std::vector<Device*> findAll()
-	{
-		return std::vector<Device*>();
-	}
 
 	bool quit(bool wait_for_quit=true);
 
